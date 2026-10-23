@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+
+import 'firestore_service.dart';
 
 class AuthException implements Exception {
   final String message;
@@ -7,20 +11,44 @@ class AuthException implements Exception {
 }
 
 class AuthService extends ChangeNotifier {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  User? usuario;
-  bool isLoading = true;
-
-  AuthService() {
-    _authCheck();
+  AuthService({FirebaseAuth? auth, FirestoreService? firestoreService})
+    : _auth = auth ?? FirebaseAuth.instance,
+      _firestoreService = firestoreService ?? FirestoreService() {
+    _authSubscription = _auth.authStateChanges().listen(
+      (user) => unawaited(_handleAuthState(user)),
+      onError: _handleAuthError,
+    );
   }
 
-  void _authCheck() {
-    _auth.authStateChanges().listen((User? user) {
-      usuario = user;
-      isLoading = false;
+  final FirebaseAuth _auth;
+  final FirestoreService _firestoreService;
+  StreamSubscription<User?>? _authSubscription;
+  User? usuario;
+  bool isLoading = true;
+  Object? initializationError;
+
+  Future<void> _handleAuthState(User? user) async {
+    usuario = user;
+    initializationError = null;
+    if (user != null) {
+      isLoading = true;
       notifyListeners();
-    });
+      try {
+        await _firestoreService.ensureViewerProfile(user);
+      } on FirebaseException catch (error) {
+        initializationError = error;
+      } on StateError catch (error) {
+        initializationError = error;
+      }
+    }
+    isLoading = false;
+    notifyListeners();
+  }
+
+  void _handleAuthError(Object error) {
+    initializationError = error;
+    isLoading = false;
+    notifyListeners();
   }
 
   void _getUser() {
@@ -60,7 +88,7 @@ class AuthService extends ChangeNotifier {
       case 'operation-not-allowed':
         return cadastro
             ? 'O cadastro por Email/Senha está desativado no Firebase. '
-                'Ative-o em Authentication > Sign-in method.'
+                  'Ative-o em Authentication > Sign-in method.'
             : 'O login por Email/Senha está desativado no Firebase.';
       case 'user-not-found':
         return 'Email não encontrado. Cadastre-se.';
@@ -78,5 +106,11 @@ class AuthService extends ChangeNotifier {
 
   Future<void> logout() async {
     await _auth.signOut();
+  }
+
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    super.dispose();
   }
 }

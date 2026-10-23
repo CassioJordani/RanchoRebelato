@@ -8,9 +8,7 @@ import 'services/auth_services.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(MyApp(authService: AuthService()));
 }
 
@@ -19,7 +17,7 @@ class MyApp extends StatelessWidget {
 
   final AuthService authService;
 
-  // This widget is the root of your application.
+  // Este widget é a raiz do aplicativo.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(

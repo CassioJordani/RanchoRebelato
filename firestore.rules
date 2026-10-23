@@ -1,0 +1,239 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function memberPath(orgId, userId) {
+      return /databases/$(database)/documents/organizations/$(orgId)/members/$(userId);
+    }
+
+    function isMember(orgId) {
+      return signedIn() && exists(memberPath(orgId, request.auth.uid));
+    }
+
+    function hasRole(orgId, roles) {
+      return isMember(orgId)
+        && get(memberPath(orgId, request.auth.uid)).data.role in roles;
+    }
+
+    function isManager(orgId) {
+      return hasRole(orgId, ['admin', 'coordinator']);
+    }
+
+    function isAdmin(orgId) {
+      return hasRole(orgId, ['admin']);
+    }
+
+    function canReadGeneralData(orgId) {
+      return hasRole(orgId, ['admin', 'coordinator', 'viewer']);
+    }
+
+    function isAssignedInstructor(orgId, classId) {
+      let classPath = /databases/$(database)/documents/organizations/$(orgId)/classes/$(classId);
+      return hasRole(orgId, ['instructor'])
+        && exists(classPath)
+        && get(classPath).data.instructorUid == request.auth.uid;
+    }
+
+    function validMemberData() {
+      return request.resource.data.keys().hasAll([
+          'role',
+          'displayName',
+          'email',
+          'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'role',
+          'displayName',
+          'email',
+          'createdAt'
+        ])
+        && request.resource.data.displayName is string
+        && request.resource.data.email is string
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.role in [
+          'admin',
+          'coordinator',
+          'instructor',
+          'viewer'
+        ];
+    }
+
+    function validClassData() {
+      return request.resource.data.keys().hasAll([
+          'name',
+          'category',
+          'instructorUid',
+          'capacity',
+          'isActive',
+          'createdAt',
+          'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'name',
+          'category',
+          'instructorUid',
+          'capacity',
+          'isActive',
+          'createdAt',
+          'updatedAt'
+        ])
+        && request.resource.data.name is string
+        && request.resource.data.category is string
+        && request.resource.data.instructorUid is string
+        && request.resource.data.capacity is int
+        && request.resource.data.capacity > 0
+        && request.resource.data.isActive is bool
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+    }
+
+    function validStudentData() {
+      return request.resource.data.keys().hasAll([
+          'fullName',
+          'phone',
+          'isActive',
+          'createdAt',
+          'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'fullName',
+          'phone',
+          'isActive',
+          'cpf',
+          'birthDate',
+          'address',
+          'guardianName',
+          'guardianRelationship',
+          'guardianPhone',
+          'guardianCpf',
+          'createdAt',
+          'updatedAt'
+        ])
+        && request.resource.data.fullName is string
+        && request.resource.data.phone is string
+        && request.resource.data.isActive is bool
+        && request.resource.data.cpf is string
+        && (
+          request.resource.data.birthDate == null
+          || request.resource.data.birthDate is timestamp
+        )
+        && request.resource.data.address is string
+        && request.resource.data.guardianName is string
+        && request.resource.data.guardianRelationship is string
+        && request.resource.data.guardianPhone is string
+        && request.resource.data.guardianCpf is string
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp;
+    }
+
+    function validEnrollmentData() {
+      return request.resource.data.keys().hasAll([
+          'studentId',
+          'studentName',
+          'enrolledAt',
+          'status'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'studentId',
+          'studentName',
+          'enrolledAt',
+          'status'
+        ])
+        && request.resource.data.studentId is string
+        && request.resource.data.studentName is string
+        && request.resource.data.enrolledAt is timestamp
+        && request.resource.data.status is string;
+    }
+
+    function validExpenseData() {
+      return request.resource.data.keys().hasAll([
+          'description',
+          'category',
+          'amountCents',
+          'occurredAt',
+          'createdBy',
+          'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'description',
+          'category',
+          'amountCents',
+          'occurredAt',
+          'createdBy',
+          'createdAt'
+        ])
+        && request.resource.data.description is string
+        && request.resource.data.category is string
+        && request.resource.data.amountCents is int
+        && request.resource.data.amountCents > 0
+        && request.resource.data.occurredAt is timestamp
+        && request.resource.data.createdAt is timestamp;
+    }
+
+    match /organizations/{orgId} {
+      allow read: if isMember(orgId);
+      allow write: if false;
+
+      match /members/{userId} {
+        allow read: if signedIn()
+          && (
+            userId == request.auth.uid
+            || isManager(orgId)
+          );
+        allow create: if signedIn()
+          && validMemberData()
+          && (
+            (userId == request.auth.uid
+              && request.resource.data.role == 'viewer')
+            || isManager(orgId)
+          );
+        allow update: if isManager(orgId)
+          && validMemberData()
+          && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if isAdmin(orgId) && userId != request.auth.uid;
+      }
+
+      match /classes/{classId} {
+        allow read: if canReadGeneralData(orgId)
+          || (resource.data.instructorUid == request.auth.uid
+            && hasRole(orgId, ['instructor']));
+        allow create: if isManager(orgId) && validClassData();
+        allow update: if isManager(orgId)
+          && validClassData()
+          && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if isManager(orgId);
+
+        match /enrollments/{enrollmentId} {
+          allow read: if canReadGeneralData(orgId)
+            || isAssignedInstructor(orgId, classId);
+          allow create, update: if isManager(orgId) && validEnrollmentData();
+          allow delete: if isManager(orgId);
+        }
+      }
+
+      match /students/{studentId} {
+        allow read: if isManager(orgId);
+        allow create: if isManager(orgId) && validStudentData();
+        allow update: if isManager(orgId)
+          && validStudentData()
+          && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if isManager(orgId);
+      }
+
+      match /expenses/{expenseId} {
+        allow read: if canReadGeneralData(orgId);
+        allow create: if isManager(orgId)
+          && validExpenseData()
+          && request.resource.data.createdBy == request.auth.uid;
+        allow update: if isAdmin(orgId)
+          && validExpenseData()
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if isAdmin(orgId);
+      }
+    }
+  }
+}
