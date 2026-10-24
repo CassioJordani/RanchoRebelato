@@ -37,7 +37,7 @@ Cadastros de alunos incluem `fullName`, `cpf`, `birthDate`, `phone`, `address`, 
 | `admin` | Lê e gerencia todos os dados e membros; edita/exclui despesas |
 | `coordinator` | Gerencia oficinas, turmas, alunos, matrículas e perfis de usuários; registra despesas |
 | `instructor` | Lê somente suas turmas e as matrículas dessas turmas |
-| `viewer` | Consulta dados gerais, mas não acessa cadastros pessoais dos alunos |
+| `viewer` | Consulta turmas e dados gerais, mas não acessa cadastros pessoais dos alunos nem despesas |
 
 As regras estão em `firestore.rules`; a autorização efetiva é aplicada no servidor.
 
@@ -45,4 +45,4 @@ As regras estão em `firestore.rules`; a autorização efetiva é aplicada no se
 
 Após o usuário entrar, contas sem perfil recebem automaticamente `viewer`. A tela inicial mostra atalhos para turmas, alunos e despesas; admin e coordenação também veem **Usuários**, onde podem alterar perfis. Admin e coordenação podem criar, editar e excluir turmas, matricular e editar matrículas, cadastrar e editar alunos e alternar o status ativo dos alunos e turmas. A exclusão do cadastro de um aluno preserva as matrículas históricas. O status do cadastro do aluno e o status da matrícula são campos separados; alterar um não altera o outro. A exclusão de uma turma também remove suas matrículas. Somente administradores podem editar ou excluir despesas; admin e coordenação podem registrar despesas. A listagem de alunos permite busca por nome, responsável ou CPF e filtro por ativos/inativos. O resumo mostra turmas e alunos ativos e o total de despesas do mês, com detalhamento por categoria. Instrutores veem somente as turmas atribuídas a eles e suas matrículas; usuários `viewer` consultam dados gerais, mas cadastros com dados pessoais de alunos são restritos a administradores e coordenação.
 
-Ao cadastrar uma turma pelo app, informe o UID da conta que tem o perfil `instructor`. As despesas são digitadas em reais na tela e salvas como centavos inteiros no Firestore.
+Ao cadastrar uma turma pelo app, selecione o professor na lista de usuários com perfil `instructor`. O CPF do aluno e do responsável é validado quando informado, e o CPF do aluno não pode ser repetido em outro cadastro. As despesas são digitadas em reais na tela e salvas como centavos inteiros no Firestore; somente admin e coordenação podem consultar despesas.

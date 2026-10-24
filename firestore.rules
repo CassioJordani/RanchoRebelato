@@ -224,7 +224,7 @@ service cloud.firestore {
       }
 
       match /expenses/{expenseId} {
-        allow read: if canReadGeneralData(orgId);
+        allow read: if isManager(orgId);
         allow create: if isManager(orgId)
           && validExpenseData()
           && request.resource.data.createdBy == request.auth.uid;

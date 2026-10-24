@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import '../models/cpf.dart';
 import '../models/enrollment.dart';
 import '../models/expense.dart';
 import '../models/monthly_expense_report.dart';
@@ -26,6 +27,9 @@ class FirestoreService {
 
   DocumentReference<Map<String, dynamic>> get _organizationDocument =>
       _firestore.collection('organizations').doc(organizationId);
+
+  CollectionReference<Map<String, dynamic>> get _students =>
+      _organizationDocument.collection('students');
 
   String get _currentUid {
     final user = _auth.currentUser;
@@ -72,6 +76,14 @@ class FirestoreService {
       });
       return members;
     });
+  }
+
+  Stream<List<OrganizationMember>> watchInstructors() {
+    return watchMembers().map(
+      (members) => members
+          .where((member) => member.role == UserRole.instructor)
+          .toList(),
+    );
   }
 
   Future<void> updateMemberRole(String uid, UserRole role) async {
@@ -139,15 +151,16 @@ class FirestoreService {
   }
 
   Stream<List<Student>> watchStudents() {
-    return _organizationDocument
-        .collection('students')
+    return _students
         .orderBy('fullName')
         .snapshots()
         .map((snapshot) => snapshot.docs.map(Student.fromDocument).toList());
   }
 
   Future<String> createStudent(Student student) async {
-    final document = _organizationDocument.collection('students').doc();
+    _validateStudentCpfs(student);
+    await _ensureStudentCpfIsUnique(student);
+    final document = _students.doc();
     await document.set({
       ...student.toMap(),
       'createdAt': FieldValue.serverTimestamp(),
@@ -157,14 +170,40 @@ class FirestoreService {
   }
 
   Future<void> updateStudent(Student student) async {
-    await _organizationDocument.collection('students').doc(student.id).update({
+    _validateStudentCpfs(student);
+    await _ensureStudentCpfIsUnique(student);
+    await _students.doc(student.id).update({
       ...student.toMap(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }
 
   Future<void> deleteStudent(String studentId) async {
-    await _organizationDocument.collection('students').doc(studentId).delete();
+    await _students.doc(studentId).delete();
+  }
+
+  void _validateStudentCpfs(Student student) {
+    if (!isValidCpf(student.cpf)) {
+      throw StateError('Informe um CPF válido para o aluno.');
+    }
+    if (!isValidCpf(student.guardianCpf)) {
+      throw StateError('Informe um CPF válido para o responsável.');
+    }
+  }
+
+  Future<void> _ensureStudentCpfIsUnique(Student student) async {
+    final cpf = normalizeCpf(student.cpf);
+    if (cpf.isEmpty) return;
+
+    final students = await _students.get();
+    final duplicate = students.docs.any((document) {
+      if (document.id == student.id) return false;
+      final existingCpf = document.data()['cpf'];
+      return existingCpf is String && normalizeCpf(existingCpf) == cpf;
+    });
+    if (duplicate) {
+      throw StateError('Já existe um aluno cadastrado com este CPF.');
+    }
   }
 
   Stream<List<Enrollment>> watchEnrollments(String classId) {

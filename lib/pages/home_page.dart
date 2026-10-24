@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../models/cpf.dart';
 import '../models/enrollment.dart';
 import '../models/expense.dart';
 import '../models/monthly_expense_report.dart';
@@ -141,12 +142,13 @@ class _HomePageState extends State<HomePage> {
         builder: (context, role, service) =>
             _StudentsPage(role: role, service: service),
       ),
-      _HomeTab(
-        label: 'Despesas',
-        icon: Icons.receipt_long_outlined,
-        builder: (context, role, service) =>
-            _ExpensesPage(role: role, service: service),
-      ),
+      if (role != UserRole.viewer)
+        _HomeTab(
+          label: 'Despesas',
+          icon: Icons.receipt_long_outlined,
+          builder: (context, role, service) =>
+              _ExpensesPage(role: role, service: service),
+        ),
       if (role == UserRole.admin || role == UserRole.coordinator)
         _HomeTab(
           label: 'Usuários',
@@ -256,21 +258,24 @@ class _DashboardPage extends StatelessWidget {
             },
           ),
         const SizedBox(height: 12),
-        StreamBuilder<MonthlyExpenseReport>(
-          stream: service.watchMonthlyExpenses(now),
-          builder: (context, snapshot) {
-            if (snapshot.hasError) return _InlineError(error: snapshot.error!);
-            if (!snapshot.hasData) {
-              return const LinearProgressIndicator();
-            }
-            return _SummaryCard(
-              icon: Icons.payments_outlined,
-              title: 'Despesas deste mês',
-              value: _formatCurrency(snapshot.data!.totalCents),
-              onTap: () => onNavigate(3),
-            );
-          },
-        ),
+        if (role != UserRole.viewer)
+          StreamBuilder<MonthlyExpenseReport>(
+            stream: service.watchMonthlyExpenses(now),
+            builder: (context, snapshot) {
+              if (snapshot.hasError) {
+                return _InlineError(error: snapshot.error!);
+              }
+              if (!snapshot.hasData) {
+                return const LinearProgressIndicator();
+              }
+              return _SummaryCard(
+                icon: Icons.payments_outlined,
+                title: 'Despesas deste mês',
+                value: _formatCurrency(snapshot.data!.totalCents),
+                onTap: () => onNavigate(3),
+              );
+            },
+          ),
         const SizedBox(height: 24),
         Text('Acesso rápido', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 8),
@@ -288,11 +293,12 @@ class _DashboardPage extends StatelessWidget {
               icon: const Icon(Icons.people_outline),
               label: const Text('Ver alunos'),
             ),
-            OutlinedButton.icon(
-              onPressed: () => onNavigate(3),
-              icon: const Icon(Icons.receipt_long_outlined),
-              label: const Text('Ver despesas'),
-            ),
+            if (role != UserRole.viewer)
+              OutlinedButton.icon(
+                onPressed: () => onNavigate(3),
+                icon: const Icon(Icons.receipt_long_outlined),
+                label: const Text('Ver despesas'),
+              ),
           ],
         ),
       ],
@@ -1365,6 +1371,7 @@ class _StudentFormState extends State<_StudentForm> {
                   controller: _cpfController,
                   keyboardType: TextInputType.number,
                   decoration: const InputDecoration(labelText: 'CPF do aluno'),
+                  validator: _cpfValidator,
                 ),
                 ListTile(
                   contentPadding: EdgeInsets.zero,
@@ -1406,6 +1413,7 @@ class _StudentFormState extends State<_StudentForm> {
                   decoration: const InputDecoration(
                     labelText: 'CPF do responsável',
                   ),
+                  validator: _cpfValidator,
                 ),
                 TextFormField(
                   controller: _guardianPhoneController,
@@ -1453,8 +1461,8 @@ class _ClassFormState extends State<_ClassForm> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _categoryController = TextEditingController();
-  final _instructorUidController = TextEditingController();
   final _capacityController = TextEditingController(text: '15');
+  String? _selectedInstructorUid;
   bool _saving = false;
   bool _isActive = true;
 
@@ -1465,7 +1473,7 @@ class _ClassFormState extends State<_ClassForm> {
     if (workshopClass != null) {
       _nameController.text = workshopClass.name;
       _categoryController.text = workshopClass.category;
-      _instructorUidController.text = workshopClass.instructorUid;
+      _selectedInstructorUid = workshopClass.instructorUid;
       _capacityController.text = workshopClass.capacity.toString();
       _isActive = workshopClass.isActive;
     }
@@ -1475,20 +1483,21 @@ class _ClassFormState extends State<_ClassForm> {
   void dispose() {
     _nameController.dispose();
     _categoryController.dispose();
-    _instructorUidController.dispose();
     _capacityController.dispose();
     super.dispose();
   }
 
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (!_formKey.currentState!.validate() || _selectedInstructorUid == null) {
+      return;
+    }
     setState(() => _saving = true);
     try {
       final workshopClass = WorkshopClass(
         id: widget.workshopClass?.id ?? '',
         name: _nameController.text.trim(),
         category: _categoryController.text.trim(),
-        instructorUid: _instructorUidController.text.trim(),
+        instructorUid: _selectedInstructorUid!,
         capacity: int.parse(_capacityController.text.trim()),
         isActive: _isActive,
       );
@@ -1534,13 +1543,63 @@ class _ClassFormState extends State<_ClassForm> {
                 ),
                 validator: _required,
               ),
-              TextFormField(
-                controller: _instructorUidController,
-                decoration: const InputDecoration(
-                  labelText: 'UID do instrutor',
-                  helperText: 'Encontre em Authentication > Users.',
-                ),
-                validator: _required,
+              StreamBuilder<List<OrganizationMember>>(
+                stream: widget.service.watchInstructors(),
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) {
+                    return _InlineError(error: snapshot.error!);
+                  }
+                  if (!snapshot.hasData) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: LinearProgressIndicator(),
+                    );
+                  }
+                  final instructors = snapshot.data!;
+                  final selectedInstructorExists = instructors.any(
+                    (member) => member.uid == _selectedInstructorUid,
+                  );
+                  final currentInstructorUnavailable =
+                      _selectedInstructorUid != null &&
+                      !selectedInstructorExists;
+                  return DropdownButtonFormField<String>(
+                    initialValue: selectedInstructorExists
+                        ? _selectedInstructorUid
+                        : null,
+                    decoration: InputDecoration(
+                      labelText: 'Professor(a)',
+                      helperText: currentInstructorUnavailable
+                          ? 'O professor atual não está disponível; selecione outro.'
+                          : instructors.isEmpty
+                          ? 'Nenhum usuário com perfil de instrutor encontrado.'
+                          : null,
+                    ),
+                    items: [
+                      ...instructors.map(
+                        (member) => DropdownMenuItem(
+                          value: member.uid,
+                          child: Text(
+                            member.displayName.isNotEmpty
+                                ? member.displayName
+                                : member.email.isNotEmpty
+                                ? member.email
+                                : 'Professor(a) sem nome',
+                          ),
+                        ),
+                      ),
+                    ],
+                    onChanged: _saving
+                        ? null
+                        : (uid) => setState(() {
+                            _selectedInstructorUid = uid == null || uid.isEmpty
+                                ? null
+                                : uid;
+                          }),
+                    validator: (value) => value == null || value.isEmpty
+                        ? 'Selecione um(a) professor(a).'
+                        : null,
+                  );
+                },
               ),
               TextFormField(
                 controller: _capacityController,
@@ -2140,6 +2199,11 @@ Student _copyStudent(Student student, {bool? isActive}) => Student(
 
 String? _required(String? value) {
   return value == null || value.trim().isEmpty ? 'Campo obrigatório.' : null;
+}
+
+String? _cpfValidator(String? value) {
+  if (value == null || value.trim().isEmpty) return null;
+  return isValidCpf(value) ? null : 'Informe um CPF válido.';
 }
 
 String _roleLabel(UserRole role) {

@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 
 import 'firestore_service.dart';
 
@@ -14,10 +14,14 @@ class AuthService extends ChangeNotifier {
   AuthService({FirebaseAuth? auth, FirestoreService? firestoreService})
     : _auth = auth ?? FirebaseAuth.instance,
       _firestoreService = firestoreService ?? FirestoreService() {
-    _authSubscription = _auth.authStateChanges().listen(
-      (user) => unawaited(_handleAuthState(user)),
-      onError: _handleAuthError,
-    );
+    if (_usesWindowsAuthWorkaround) {
+      isLoading = false;
+    } else {
+      _authSubscription = _auth.authStateChanges().listen(
+        (user) => unawaited(_handleAuthState(user)),
+        onError: _handleAuthError,
+      );
+    }
   }
 
   final FirebaseAuth _auth;
@@ -26,6 +30,9 @@ class AuthService extends ChangeNotifier {
   User? usuario;
   bool isLoading = true;
   Object? initializationError;
+
+  bool get _usesWindowsAuthWorkaround =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
 
   Future<void> _handleAuthState(User? user) async {
     usuario = user;
@@ -52,14 +59,21 @@ class AuthService extends ChangeNotifier {
   }
 
   void _getUser() {
+    if (_usesWindowsAuthWorkaround) {
+      unawaited(_handleAuthState(_auth.currentUser));
+      return;
+    }
     usuario = _auth.currentUser;
     notifyListeners();
   }
 
   Future<void> registrar(String email, String senha) async {
     try {
-      await _auth.createUserWithEmailAndPassword(email: email, password: senha);
-      _getUser();
+      final credential = await _auth.createUserWithEmailAndPassword(
+        email: email,
+        password: senha,
+      );
+      await _handleAuthenticationResult(credential);
     } on FirebaseAuthException catch (e) {
       throw AuthException(_mensagemDoFirebase(e, cadastro: true));
     }
@@ -67,10 +81,21 @@ class AuthService extends ChangeNotifier {
 
   Future<void> login(String email, String senha) async {
     try {
-      await _auth.signInWithEmailAndPassword(email: email, password: senha);
-      _getUser();
+      final credential = await _auth.signInWithEmailAndPassword(
+        email: email,
+        password: senha,
+      );
+      await _handleAuthenticationResult(credential);
     } on FirebaseAuthException catch (e) {
       throw AuthException(_mensagemDoFirebase(e));
+    }
+  }
+
+  Future<void> _handleAuthenticationResult(UserCredential credential) async {
+    if (_usesWindowsAuthWorkaround) {
+      await _handleAuthState(credential.user);
+    } else {
+      _getUser();
     }
   }
 
@@ -106,6 +131,9 @@ class AuthService extends ChangeNotifier {
 
   Future<void> logout() async {
     await _auth.signOut();
+    if (_usesWindowsAuthWorkaround) {
+      await _handleAuthState(null);
+    }
   }
 
   @override
