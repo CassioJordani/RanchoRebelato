@@ -249,7 +249,8 @@ class FirestoreService {
         .collection('classes')
         .doc(classId);
     final enrollments = classDocument.collection('enrollments');
-    final document = enrollments.doc();
+    final document = enrollments.doc(enrollment.studentId);
+    await _ensureStudentIsNotEnrolled(enrollments, enrollment.studentId);
     final initialClassSnapshot = await classDocument.get();
     if (!initialClassSnapshot.exists) {
       throw StateError('A turma não existe mais.');
@@ -261,8 +262,12 @@ class FirestoreService {
 
     await _firestore.runTransaction((transaction) async {
       final classSnapshot = await transaction.get(classDocument);
+      final enrollmentSnapshot = await transaction.get(document);
       if (!classSnapshot.exists) {
         throw StateError('A turma não existe mais.');
+      }
+      if (enrollmentSnapshot.exists) {
+        throw StateError('Este aluno já está matriculado nesta turma.');
       }
 
       final classData = classSnapshot.data()!;
@@ -297,6 +302,12 @@ class FirestoreService {
         .doc(classId);
     final enrollments = classDocument.collection('enrollments');
     final document = enrollments.doc(enrollment.id);
+    final canonicalDocument = enrollments.doc(enrollment.studentId);
+    await _ensureStudentIsNotEnrolled(
+      enrollments,
+      enrollment.studentId,
+      excludingEnrollmentId: enrollment.id,
+    );
     final initialClassSnapshot = await classDocument.get();
     if (!initialClassSnapshot.exists) {
       throw StateError('A turma não existe mais.');
@@ -309,8 +320,14 @@ class FirestoreService {
     await _firestore.runTransaction((transaction) async {
       final classSnapshot = await transaction.get(classDocument);
       final enrollmentSnapshot = await transaction.get(document);
+      final canonicalSnapshot = canonicalDocument.path == document.path
+          ? enrollmentSnapshot
+          : await transaction.get(canonicalDocument);
       if (!classSnapshot.exists || !enrollmentSnapshot.exists) {
         throw StateError('A turma ou matrícula não existe mais.');
+      }
+      if (canonicalDocument.path != document.path && canonicalSnapshot.exists) {
+        throw StateError('Este aluno já está matriculado nesta turma.');
       }
 
       final classData = classSnapshot.data()!;
@@ -332,12 +349,32 @@ class FirestoreService {
         throw StateError('Não há vagas disponíveis nesta turma.');
       }
 
-      transaction.update(document, enrollment.toMap());
+      if (canonicalDocument.path == document.path) {
+        transaction.update(document, enrollment.toMap());
+      } else {
+        transaction.set(canonicalDocument, enrollment.toMap());
+        transaction.delete(document);
+      }
       transaction.update(classDocument, {
         'activeEnrollmentCount': nextCount,
         'updatedAt': FieldValue.serverTimestamp(),
       });
     });
+  }
+
+  Future<void> _ensureStudentIsNotEnrolled(
+    CollectionReference<Map<String, dynamic>> enrollments,
+    String studentId, {
+    String? excludingEnrollmentId,
+  }) async {
+    final existingEnrollments = await enrollments
+        .where('studentId', isEqualTo: studentId)
+        .get();
+    if (existingEnrollments.docs.any(
+      (document) => document.id != excludingEnrollmentId,
+    )) {
+      throw StateError('Este aluno já está matriculado nesta turma.');
+    }
   }
 
   Future<int> _activeEnrollmentCount(

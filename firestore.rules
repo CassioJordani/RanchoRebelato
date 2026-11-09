@@ -225,7 +225,9 @@ service cloud.firestore {
         match /enrollments/{enrollmentId} {
           allow read: if canReadGeneralData(orgId)
             || isAssignedInstructor(orgId, classId);
-          allow create, update: if isManager(orgId) && validEnrollmentData();
+          allow create, update: if isManager(orgId)
+            && validEnrollmentData()
+            && enrollmentId == request.resource.data.studentId;
           allow delete: if isManager(orgId);
         }
 

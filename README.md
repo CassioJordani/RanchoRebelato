@@ -50,6 +50,6 @@ Após o usuário entrar, contas sem perfil recebem automaticamente `viewer`. A t
 
 Ao cadastrar uma turma pelo app, selecione o professor na lista de usuários com perfil `instructor`. O CPF do aluno e do responsável é validado quando informado, e o CPF do aluno não pode ser repetido em outro cadastro. As despesas são digitadas em reais na tela e salvas como centavos inteiros no Firestore; somente admin e coordenação podem consultar despesas.
 
-Administração e instrutores atribuídos podem registrar presença ou falta por aluno e por data da aula, a partir das matrículas ativas. A criação e reativação de matrículas verificam as vagas em uma transação do Firestore; turmas antigas sem contador de matrículas ativas têm o contador inicializado a partir dos registros existentes.
+Administração e instrutores atribuídos podem registrar presença ou falta por aluno e por data da aula, a partir das matrículas ativas. A criação e reativação de matrículas verificam as vagas em uma transação do Firestore; turmas antigas sem contador de matrículas ativas têm o contador inicializado a partir dos registros existentes. Um aluno só pode ter uma matrícula por turma: o ID do documento da matrícula é o ID do aluno, e matrículas antigas são verificadas antes de criar ou editar.
 
 O cadastro da turma pode guardar um horário diferente para cada dia da semana. O relatório de frequência da turma permite selecionar um período e consultar presenças, faltas e percentual individual por aluno; somente datas com frequência registrada entram no relatório.
