@@ -76,6 +76,8 @@ service cloud.firestore {
           'category',
           'instructorUid',
           'capacity',
+          'activeEnrollmentCount',
+          'schedule',
           'isActive',
           'createdAt',
           'updatedAt'
@@ -85,6 +87,20 @@ service cloud.firestore {
         && request.resource.data.instructorUid is string
         && request.resource.data.capacity is int
         && request.resource.data.capacity > 0
+        && (
+          !request.resource.data.keys().hasAny(['activeEnrollmentCount'])
+          || (
+            request.resource.data.activeEnrollmentCount is int
+            && request.resource.data.activeEnrollmentCount >= 0
+          )
+        )
+        && (
+          !request.resource.data.keys().hasAny(['schedule'])
+          || (
+            request.resource.data.schedule is list
+            && request.resource.data.schedule.size() <= 7
+          )
+        )
         && request.resource.data.isActive is bool
         && request.resource.data.createdAt is timestamp
         && request.resource.data.updatedAt is timestamp;
@@ -211,6 +227,46 @@ service cloud.firestore {
             || isAssignedInstructor(orgId, classId);
           allow create, update: if isManager(orgId) && validEnrollmentData();
           allow delete: if isManager(orgId);
+        }
+
+        match /attendance/{lessonId} {
+          allow read: if canReadGeneralData(orgId)
+            || isAssignedInstructor(orgId, classId);
+          allow create, update: if (
+              isManager(orgId) || isAssignedInstructor(orgId, classId)
+            )
+            && request.resource.data.keys().hasAll(['lessonDate', 'updatedAt'])
+            && request.resource.data.keys().hasOnly(['lessonDate', 'updatedAt'])
+            && request.resource.data.lessonDate is timestamp
+            && request.resource.data.updatedAt is timestamp;
+          allow delete: if isManager(orgId)
+            || isAssignedInstructor(orgId, classId);
+
+          match /students/{studentId} {
+            allow read: if canReadGeneralData(orgId)
+              || isAssignedInstructor(orgId, classId);
+            allow create, update: if (
+                isManager(orgId) || isAssignedInstructor(orgId, classId)
+              )
+              && request.resource.data.keys().hasAll([
+                'studentId',
+                'studentName',
+                'present',
+                'markedAt'
+              ])
+              && request.resource.data.keys().hasOnly([
+                'studentId',
+                'studentName',
+                'present',
+                'markedAt'
+              ])
+              && request.resource.data.studentId == studentId
+              && request.resource.data.studentName is string
+              && request.resource.data.present is bool
+              && request.resource.data.markedAt is timestamp;
+            allow delete: if isManager(orgId)
+              || isAssignedInstructor(orgId, classId);
+          }
         }
       }
 

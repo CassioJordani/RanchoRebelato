@@ -38,4 +38,52 @@ void main() {
       ),
     );
   });
+
+  test('lê os dias e horários definidos para a turma', () {
+    final workshopClass = WorkshopClass.fromMap('dance-1', {
+      'name': 'Dança - Infantil',
+      'category': 'Dança',
+      'instructorUid': 'instructor-uid',
+      'capacity': 15,
+      'isActive': true,
+      'schedule': [
+        {'weekday': 2, 'startTime': '18:00', 'endTime': '19:30'},
+        {'weekday': 5, 'startTime': '17:00', 'endTime': '18:00'},
+      ],
+    });
+
+    expect(workshopClass.schedule, hasLength(2));
+    expect(workshopClass.schedule.first.weekday, 2);
+    expect(workshopClass.schedule.first.startTime, '18:00');
+    expect(workshopClass.schedule.last.weekday, 5);
+  });
+
+  test('mantém compatibilidade com turma antiga sem horário cadastrado', () {
+    final workshopClass = WorkshopClass.fromMap('dance-1', {
+      'name': 'Dança - Infantil',
+      'category': 'Dança',
+      'instructorUid': 'instructor-uid',
+      'capacity': 15,
+      'isActive': true,
+    });
+
+    expect(workshopClass.schedule, isEmpty);
+  });
+
+  test('rejeita horário inválido ou dia repetido', () {
+    expect(
+      () => WorkshopClass.fromMap('dance-1', {
+        'name': 'Dança - Infantil',
+        'category': 'Dança',
+        'instructorUid': 'instructor-uid',
+        'capacity': 15,
+        'isActive': true,
+        'schedule': [
+          {'weekday': 2, 'startTime': '19:00', 'endTime': '18:00'},
+          {'weekday': 2, 'startTime': '18:00', 'endTime': '19:00'},
+        ],
+      }),
+      throwsA(isA<FormatException>()),
+    );
+  });
 }

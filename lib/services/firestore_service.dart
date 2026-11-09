@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import '../models/attendance_record.dart';
+import '../models/attendance_lesson.dart';
 import '../models/cpf.dart';
 import '../models/enrollment.dart';
 import '../models/expense.dart';
@@ -139,15 +141,38 @@ class FirestoreService {
     final enrollmentSnapshot = await classDocument
         .collection('enrollments')
         .get();
-    for (var start = 0; start < enrollmentSnapshot.docs.length; start += 400) {
+    await _deleteDocuments(
+      enrollmentSnapshot.docs.map((document) => document.reference).toList(),
+    );
+
+    final attendanceSessions = await classDocument
+        .collection('attendance')
+        .get();
+    for (final session in attendanceSessions.docs) {
+      final attendanceRecords = await session.reference
+          .collection('students')
+          .get();
+      await _deleteDocuments(
+        attendanceRecords.docs.map((document) => document.reference).toList(),
+      );
+    }
+    await _deleteDocuments(
+      attendanceSessions.docs.map((document) => document.reference).toList(),
+    );
+    await classDocument.delete();
+  }
+
+  Future<void> _deleteDocuments(
+    List<DocumentReference<Map<String, dynamic>>> documents,
+  ) async {
+    for (var start = 0; start < documents.length; start += 400) {
       final batch = _firestore.batch();
-      final end = (start + 400).clamp(0, enrollmentSnapshot.docs.length);
-      for (final enrollment in enrollmentSnapshot.docs.sublist(start, end)) {
-        batch.delete(enrollment.reference);
+      final end = (start + 400).clamp(0, documents.length);
+      for (final document in documents.sublist(start, end)) {
+        batch.delete(document);
       }
       await batch.commit();
     }
-    await classDocument.delete();
   }
 
   Stream<List<Student>> watchStudents() {
@@ -220,12 +245,46 @@ class FirestoreService {
     required String classId,
     required Enrollment enrollment,
   }) async {
-    final document = _organizationDocument
+    final classDocument = _organizationDocument
         .collection('classes')
-        .doc(classId)
-        .collection('enrollments')
-        .doc();
-    await document.set(enrollment.toMap());
+        .doc(classId);
+    final enrollments = classDocument.collection('enrollments');
+    final document = enrollments.doc();
+    final initialClassSnapshot = await classDocument.get();
+    if (!initialClassSnapshot.exists) {
+      throw StateError('A turma não existe mais.');
+    }
+    final initialActiveCount = await _activeEnrollmentCount(
+      enrollments,
+      initialClassSnapshot.data()!,
+    );
+
+    await _firestore.runTransaction((transaction) async {
+      final classSnapshot = await transaction.get(classDocument);
+      if (!classSnapshot.exists) {
+        throw StateError('A turma não existe mais.');
+      }
+
+      final classData = classSnapshot.data()!;
+      final capacity = classData['capacity'];
+      if (capacity is! int || capacity < 1) {
+        throw StateError('O limite de vagas da turma é inválido.');
+      }
+      final storedCount = classData['activeEnrollmentCount'];
+      final activeCount = storedCount is int && storedCount >= 0
+          ? storedCount
+          : initialActiveCount;
+      if (enrollment.status == 'active' && activeCount >= capacity) {
+        throw StateError('Não há vagas disponíveis nesta turma.');
+      }
+
+      transaction.set(document, enrollment.toMap());
+      transaction.update(classDocument, {
+        'activeEnrollmentCount':
+            activeCount + (enrollment.status == 'active' ? 1 : 0),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    });
     return document.id;
   }
 
@@ -233,12 +292,171 @@ class FirestoreService {
     required String classId,
     required Enrollment enrollment,
   }) async {
-    await _organizationDocument
+    final classDocument = _organizationDocument
+        .collection('classes')
+        .doc(classId);
+    final enrollments = classDocument.collection('enrollments');
+    final document = enrollments.doc(enrollment.id);
+    final initialClassSnapshot = await classDocument.get();
+    if (!initialClassSnapshot.exists) {
+      throw StateError('A turma não existe mais.');
+    }
+    final initialActiveCount = await _activeEnrollmentCount(
+      enrollments,
+      initialClassSnapshot.data()!,
+    );
+
+    await _firestore.runTransaction((transaction) async {
+      final classSnapshot = await transaction.get(classDocument);
+      final enrollmentSnapshot = await transaction.get(document);
+      if (!classSnapshot.exists || !enrollmentSnapshot.exists) {
+        throw StateError('A turma ou matrícula não existe mais.');
+      }
+
+      final classData = classSnapshot.data()!;
+      final capacity = classData['capacity'];
+      if (capacity is! int || capacity < 1) {
+        throw StateError('O limite de vagas da turma é inválido.');
+      }
+      final storedCount = classData['activeEnrollmentCount'];
+      final activeCount = storedCount is int && storedCount >= 0
+          ? storedCount
+          : initialActiveCount;
+      final oldStatus = enrollmentSnapshot.data()?['status'];
+      final wasActive = oldStatus == 'active';
+      final willBeActive = enrollment.status == 'active';
+      final nextCount =
+          activeCount + (willBeActive ? 1 : 0) - (wasActive ? 1 : 0);
+
+      if (willBeActive && !wasActive && activeCount >= capacity) {
+        throw StateError('Não há vagas disponíveis nesta turma.');
+      }
+
+      transaction.update(document, enrollment.toMap());
+      transaction.update(classDocument, {
+        'activeEnrollmentCount': nextCount,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    });
+  }
+
+  Future<int> _activeEnrollmentCount(
+    CollectionReference<Map<String, dynamic>> enrollments,
+    Map<String, dynamic> classData,
+  ) async {
+    final storedCount = classData['activeEnrollmentCount'];
+    if (storedCount is int && storedCount >= 0) return storedCount;
+
+    final snapshot = await enrollments.get();
+    return snapshot.docs
+        .where((document) => document.data()['status'] == 'active')
+        .length;
+  }
+
+  Stream<List<AttendanceRecord>> watchAttendance(
+    String classId,
+    DateTime lessonDate,
+  ) {
+    return _attendanceSession(classId, lessonDate)
+        .collection('students')
+        .snapshots()
+        .map(
+          (snapshot) =>
+              snapshot.docs.map(AttendanceRecord.fromDocument).toList(),
+        );
+  }
+
+  Future<List<AttendanceLesson>> getAttendanceReport({
+    required String classId,
+    required DateTime startDate,
+    required DateTime endDate,
+  }) async {
+    final attendance = _organizationDocument
         .collection('classes')
         .doc(classId)
-        .collection('enrollments')
-        .doc(enrollment.id)
-        .update(enrollment.toMap());
+        .collection('attendance');
+    final start = DateTime(startDate.year, startDate.month, startDate.day);
+    final end = DateTime(endDate.year, endDate.month, endDate.day + 1);
+    final sessions = await attendance
+        .where('lessonDate', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+        .where('lessonDate', isLessThan: Timestamp.fromDate(end))
+        .orderBy('lessonDate')
+        .get();
+
+    return Future.wait(
+      sessions.docs.map((session) async {
+        final lessonDate = session.data()['lessonDate'];
+        if (lessonDate is! Timestamp) {
+          throw FormatException(
+            'A aula "${session.id}" está sem uma data válida no Firestore.',
+          );
+        }
+        final students = await session.reference.collection('students').get();
+        return AttendanceLesson(
+          date: lessonDate.toDate(),
+          records: students.docs.map(AttendanceRecord.fromDocument).toList(),
+        );
+      }),
+    );
+  }
+
+  Future<void> saveAttendance({
+    required String classId,
+    required DateTime lessonDate,
+    required List<AttendanceRecord> records,
+  }) async {
+    final session = _attendanceSession(classId, lessonDate);
+    final lessonDay = DateTime(
+      lessonDate.year,
+      lessonDate.month,
+      lessonDate.day,
+    );
+    const batchSize = 450;
+
+    if (records.isEmpty) {
+      final batch = _firestore.batch();
+      batch.set(session, {
+        'lessonDate': Timestamp.fromDate(lessonDay),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      await batch.commit();
+      return;
+    }
+
+    for (var start = 0; start < records.length; start += batchSize) {
+      final batch = _firestore.batch();
+      if (start == 0) {
+        batch.set(session, {
+          'lessonDate': Timestamp.fromDate(lessonDay),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+      final end = (start + batchSize).clamp(0, records.length);
+      for (final record in records.sublist(start, end)) {
+        batch.set(session.collection('students').doc(record.studentId), {
+          'studentId': record.studentId,
+          'studentName': record.studentName,
+          'present': record.present,
+          'markedAt': FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    }
+  }
+
+  DocumentReference<Map<String, dynamic>> _attendanceSession(
+    String classId,
+    DateTime lessonDate,
+  ) {
+    final dateId =
+        '${lessonDate.year.toString().padLeft(4, '0')}'
+        '${lessonDate.month.toString().padLeft(2, '0')}'
+        '${lessonDate.day.toString().padLeft(2, '0')}';
+    return _organizationDocument
+        .collection('classes')
+        .doc(classId)
+        .collection('attendance')
+        .doc(dateId);
   }
 
   Stream<MonthlyExpenseReport> watchMonthlyExpenses(DateTime month) {

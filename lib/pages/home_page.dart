@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../models/attendance_lesson.dart';
+import '../models/attendance_record.dart';
 import '../models/cpf.dart';
 import '../models/enrollment.dart';
 import '../models/expense.dart';
@@ -340,6 +342,7 @@ class _ClassesPage extends StatelessWidget {
             itemBuilder: (context, index) => _ClassCard(
               workshopClass: classes[index],
               canManage: canManage,
+              canRecordAttendance: canManage || role == UserRole.instructor,
               canReadMemberProfiles: role != UserRole.viewer,
               service: service,
             ),
@@ -361,12 +364,14 @@ class _ClassCard extends StatelessWidget {
   const _ClassCard({
     required this.workshopClass,
     required this.canManage,
+    required this.canRecordAttendance,
     required this.canReadMemberProfiles,
     required this.service,
   });
 
   final WorkshopClass workshopClass;
   final bool canManage;
+  final bool canRecordAttendance;
   final bool canReadMemberProfiles;
   final FirestoreService service;
 
@@ -385,6 +390,11 @@ class _ClassCard extends StatelessWidget {
             Text(
               '${workshopClass.category} · limite de ${workshopClass.capacity} alunos',
             ),
+            if (workshopClass.schedule.isNotEmpty)
+              Text(
+                _classScheduleLabel(workshopClass.schedule),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             if (canReadMemberProfiles)
               StreamBuilder<String?>(
                 stream: service.watchMemberName(workshopClass.instructorUid),
@@ -466,13 +476,16 @@ class _ClassCard extends StatelessWidget {
                 );
               }
               final enrollments = snapshot.data!;
+              final activeEnrollments = enrollments
+                  .where((enrollment) => enrollment.status == 'active')
+                  .toList();
               return Column(
                 children: [
                   ListTile(
                     dense: true,
                     leading: const Icon(Icons.people_outline),
                     title: Text(
-                      'Matrículas: ${enrollments.length}/${workshopClass.capacity}',
+                      'Matrículas ativas: ${activeEnrollments.length}/${workshopClass.capacity}',
                     ),
                     subtitle: Text(
                       canReadMemberProfiles
@@ -504,24 +517,49 @@ class _ClassCard extends StatelessWidget {
                             : null,
                       ),
                     ),
-                  if (canManage)
+                  if (canManage || canRecordAttendance)
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      child: Wrap(
+                        spacing: 8,
                         children: [
-                          TextButton.icon(
-                            onPressed:
-                                enrollments.length >= workshopClass.capacity
-                                ? null
-                                : () => _showEnrollmentForm(
-                                    context,
-                                    service,
-                                    workshopClass,
-                                  ),
-                            icon: const Icon(Icons.person_add_alt_1),
-                            label: const Text('Matricular aluno'),
-                          ),
+                          if (canManage)
+                            TextButton.icon(
+                              onPressed:
+                                  activeEnrollments.length >=
+                                      workshopClass.capacity
+                                  ? null
+                                  : () => _showEnrollmentForm(
+                                      context,
+                                      service,
+                                      workshopClass,
+                                    ),
+                              icon: const Icon(Icons.person_add_alt_1),
+                              label: const Text('Matricular aluno'),
+                            ),
+                          if (canRecordAttendance)
+                            TextButton.icon(
+                              onPressed: activeEnrollments.isEmpty
+                                  ? null
+                                  : () => _showAttendanceForm(
+                                      context,
+                                      service,
+                                      workshopClass,
+                                      activeEnrollments,
+                                    ),
+                              icon: const Icon(Icons.fact_check_outlined),
+                              label: const Text('Registrar frequência'),
+                            ),
+                          if (canRecordAttendance)
+                            TextButton.icon(
+                              onPressed: () => _showAttendanceReport(
+                                context,
+                                service,
+                                workshopClass,
+                              ),
+                              icon: const Icon(Icons.assessment_outlined),
+                              label: const Text('Relatório de frequência'),
+                            ),
                         ],
                       ),
                     ),
@@ -1462,6 +1500,7 @@ class _ClassFormState extends State<_ClassForm> {
   final _nameController = TextEditingController();
   final _categoryController = TextEditingController();
   final _capacityController = TextEditingController(text: '15');
+  final Map<int, ClassSchedule> _schedule = {};
   String? _selectedInstructorUid;
   bool _saving = false;
   bool _isActive = true;
@@ -1476,6 +1515,9 @@ class _ClassFormState extends State<_ClassForm> {
       _selectedInstructorUid = workshopClass.instructorUid;
       _capacityController.text = workshopClass.capacity.toString();
       _isActive = workshopClass.isActive;
+      for (final entry in workshopClass.schedule) {
+        _schedule[entry.weekday] = entry;
+      }
     }
   }
 
@@ -1500,6 +1542,8 @@ class _ClassFormState extends State<_ClassForm> {
         instructorUid: _selectedInstructorUid!,
         capacity: int.parse(_capacityController.text.trim()),
         isActive: _isActive,
+        schedule: _schedule.values.toList()
+          ..sort((a, b) => a.weekday.compareTo(b.weekday)),
       );
       if (widget.workshopClass == null) {
         await widget.service.createClass(workshopClass);
@@ -1612,6 +1656,18 @@ class _ClassFormState extends State<_ClassForm> {
                       : null;
                 },
               ),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: EdgeInsets.only(top: 16, bottom: 4),
+                  child: Text(
+                    'Dias e horários das aulas',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+              for (var weekday = 1; weekday <= 7; weekday++)
+                _scheduleDayTile(weekday),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('Turma ativa'),
@@ -1640,6 +1696,262 @@ class _ClassFormState extends State<_ClassForm> {
       ],
     );
   }
+
+  Widget _scheduleDayTile(int weekday) {
+    final schedule = _schedule[weekday];
+    final label = _weekdayLabel(weekday);
+    if (schedule == null) {
+      return CheckboxListTile(
+        contentPadding: EdgeInsets.zero,
+        title: Text(label),
+        value: false,
+        onChanged: _saving
+            ? null
+            : (selected) {
+                if (selected == true) {
+                  setState(() {
+                    _schedule[weekday] = ClassSchedule(
+                      weekday: weekday,
+                      startTime: '18:00',
+                      endTime: '19:00',
+                    );
+                  });
+                }
+              },
+      );
+    }
+
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Checkbox(
+        value: true,
+        onChanged: _saving
+            ? null
+            : (selected) {
+                if (selected == false) {
+                  setState(() => _schedule.remove(weekday));
+                }
+              },
+      ),
+      title: Text(label),
+      subtitle: Text('${schedule.startTime} – ${schedule.endTime}'),
+      trailing: IconButton(
+        tooltip: 'Alterar horário de $label',
+        icon: const Icon(Icons.schedule_outlined),
+        onPressed: _saving ? null : () => _editScheduleTime(schedule),
+      ),
+    );
+  }
+
+  Future<void> _editScheduleTime(ClassSchedule schedule) async {
+    final start = await showTimePicker(
+      context: context,
+      initialTime: _parseTimeOfDay(schedule.startTime),
+      helpText: 'Início da aula',
+    );
+    if (start == null || !mounted) return;
+    final end = await showTimePicker(
+      context: context,
+      initialTime: _parseTimeOfDay(schedule.endTime),
+      helpText: 'Fim da aula',
+    );
+    if (end == null) return;
+    final startText = _formatTimeOfDay(start);
+    final endText = _formatTimeOfDay(end);
+    if (startText.compareTo(endText) >= 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'O horário final deve ser depois do horário inicial.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    setState(() {
+      _schedule[schedule.weekday] = ClassSchedule(
+        weekday: schedule.weekday,
+        startTime: startText,
+        endTime: endText,
+      );
+    });
+  }
+}
+
+class _AttendanceReportDialog extends StatefulWidget {
+  const _AttendanceReportDialog({
+    required this.service,
+    required this.workshopClass,
+  });
+
+  final FirestoreService service;
+  final WorkshopClass workshopClass;
+
+  @override
+  State<_AttendanceReportDialog> createState() =>
+      _AttendanceReportDialogState();
+}
+
+class _AttendanceReportDialogState extends State<_AttendanceReportDialog> {
+  late DateTimeRange _period;
+  late Future<List<AttendanceLesson>> _report;
+
+  @override
+  void initState() {
+    super.initState();
+    final now = DateTime.now();
+    _period = DateTimeRange(start: DateTime(now.year, now.month), end: now);
+    _report = _loadReport();
+  }
+
+  Future<List<AttendanceLesson>> _loadReport() {
+    return widget.service.getAttendanceReport(
+      classId: widget.workshopClass.id,
+      startDate: _period.start,
+      endDate: _period.end,
+    );
+  }
+
+  Future<void> _selectPeriod() async {
+    final selected = await showDateRangePicker(
+      context: context,
+      initialDateRange: _period,
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now(),
+      helpText: 'Período do relatório',
+      saveText: 'Aplicar',
+    );
+    if (selected == null) return;
+    setState(() {
+      _period = selected;
+      _report = _loadReport();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Frequência · ${widget.workshopClass.name}'),
+      content: SizedBox(
+        width: 560,
+        height: 480,
+        child: Column(
+          children: [
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Período'),
+              subtitle: Text(
+                '${_dateLabel(_period.start)} até ${_dateLabel(_period.end)}',
+              ),
+              trailing: const Icon(Icons.date_range_outlined),
+              onTap: _selectPeriod,
+            ),
+            Expanded(
+              child: FutureBuilder<List<AttendanceLesson>>(
+                future: _report,
+                builder: (context, snapshot) {
+                  if (snapshot.hasError) {
+                    return _InlineError(error: snapshot.error!);
+                  }
+                  if (!snapshot.hasData) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  final lessons = snapshot.data!;
+                  if (lessons.isEmpty) {
+                    return const Center(
+                      child: Text('Não há aulas registradas neste período.'),
+                    );
+                  }
+
+                  final studentLessons =
+                      <String, List<MapEntry<DateTime, AttendanceRecord>>>{};
+                  for (final lesson in lessons) {
+                    for (final record in lesson.records) {
+                      studentLessons
+                          .putIfAbsent(record.studentId, () => [])
+                          .add(MapEntry(lesson.date, record));
+                    }
+                  }
+                  final studentNames = <String, String>{
+                    for (final lesson in lessons)
+                      for (final record in lesson.records)
+                        record.studentId: record.studentName,
+                  };
+                  final studentIds = studentLessons.keys.toList()
+                    ..sort(
+                      (a, b) => studentNames[a]!.toLowerCase().compareTo(
+                        studentNames[b]!.toLowerCase(),
+                      ),
+                    );
+
+                  return ListView(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Text(
+                          '${lessons.length} ${lessons.length == 1 ? 'aula registrada' : 'aulas registradas'}',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                      ),
+                      for (final studentId in studentIds)
+                        _AttendanceStudentReport(
+                          name: studentNames[studentId]!,
+                          lessons: studentLessons[studentId]!,
+                        ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Fechar'),
+        ),
+      ],
+    );
+  }
+}
+
+class _AttendanceStudentReport extends StatelessWidget {
+  const _AttendanceStudentReport({required this.name, required this.lessons});
+
+  final String name;
+  final List<MapEntry<DateTime, AttendanceRecord>> lessons;
+
+  @override
+  Widget build(BuildContext context) {
+    final presentCount = lessons.where((entry) => entry.value.present).length;
+    final absentCount = lessons.length - presentCount;
+    final percentage = (presentCount * 100 / lessons.length).round();
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      title: Text(name),
+      subtitle: Text(
+        '$presentCount presença(s) · $absentCount falta(s) · $percentage%',
+      ),
+      children: [
+        for (final entry in lessons)
+          ListTile(
+            dense: true,
+            title: Text(_dateLabel(entry.key)),
+            trailing: Text(
+              entry.value.present ? 'Presente' : 'Falta',
+              style: TextStyle(
+                color: entry.value.present
+                    ? Colors.green.shade700
+                    : Theme.of(context).colorScheme.error,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
 }
 
 class _EnrollmentForm extends StatefulWidget {
@@ -1662,11 +1974,13 @@ class _EnrollmentFormState extends State<_EnrollmentForm> {
   Student? _selectedStudent;
   late DateTime _enrolledAt = widget.enrollment?.enrolledAt ?? DateTime.now();
   late String _status = widget.enrollment?.status ?? 'active';
+  late Stream<List<Student>> _studentsStream;
   bool _saving = false;
 
   @override
   void initState() {
     super.initState();
+    _studentsStream = widget.service.watchStudents();
     final enrollment = widget.enrollment;
     if (enrollment != null) {
       _selectedStudent = Student(
@@ -1715,6 +2029,8 @@ class _EnrollmentFormState extends State<_EnrollmentForm> {
       if (mounted) _showSaveError(context, error);
     } on StateError catch (error) {
       if (mounted) _showSaveError(context, error);
+    } on Object catch (error) {
+      if (mounted) _showSaveError(context, error);
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -1728,7 +2044,7 @@ class _EnrollmentFormState extends State<_EnrollmentForm> {
         '${widget.workshopClass.name}',
       ),
       content: StreamBuilder<List<Student>>(
-        stream: widget.service.watchStudents(),
+        stream: _studentsStream,
         builder: (context, snapshot) {
           if (snapshot.hasError) return _InlineError(error: snapshot.error!);
           if (!snapshot.hasData) {
@@ -1821,6 +2137,209 @@ class _EnrollmentFormState extends State<_EnrollmentForm> {
               : const Text('Matricular'),
         ),
       ],
+    );
+  }
+}
+
+class _AttendanceForm extends StatefulWidget {
+  const _AttendanceForm({
+    required this.service,
+    required this.workshopClass,
+    required this.enrollments,
+  });
+
+  final FirestoreService service;
+  final WorkshopClass workshopClass;
+  final List<Enrollment> enrollments;
+
+  @override
+  State<_AttendanceForm> createState() => _AttendanceFormState();
+}
+
+class _AttendanceFormState extends State<_AttendanceForm> {
+  late DateTime _lessonDate = DateTime.now();
+  late Stream<List<AttendanceRecord>> _attendanceStream;
+  final Map<String, bool> _changes = {};
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _attendanceStream = widget.service.watchAttendance(
+      widget.workshopClass.id,
+      _lessonDate,
+    );
+  }
+
+  Future<void> _pickDate() async {
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: _lessonDate,
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now(),
+    );
+    if (selected != null) {
+      setState(() {
+        _lessonDate = selected;
+        _changes.clear();
+        _attendanceStream = widget.service.watchAttendance(
+          widget.workshopClass.id,
+          selected,
+        );
+      });
+    }
+  }
+
+  Future<void> _save(Map<String, AttendanceRecord> savedRecords) async {
+    final records = <AttendanceRecord>[];
+    for (final enrollment in widget.enrollments) {
+      final present =
+          _changes[enrollment.studentId] ??
+          savedRecords[enrollment.studentId]?.present;
+      if (present == null) return;
+      records.add(
+        AttendanceRecord(
+          studentId: enrollment.studentId,
+          studentName: enrollment.studentName,
+          present: present,
+        ),
+      );
+    }
+
+    setState(() => _saving = true);
+    try {
+      await widget.service.saveAttendance(
+        classId: widget.workshopClass.id,
+        lessonDate: _lessonDate,
+        records: records,
+      );
+      if (mounted) Navigator.pop(context);
+    } on FirebaseException catch (error) {
+      if (mounted) _showSaveError(context, error);
+    } on StateError catch (error) {
+      if (mounted) _showSaveError(context, error);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dateKey =
+        '${_lessonDate.year}-${_lessonDate.month}-${_lessonDate.day}';
+    return StreamBuilder<List<AttendanceRecord>>(
+      key: ValueKey(dateKey),
+      stream: _attendanceStream,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return AlertDialog(
+            title: Text('Frequência · ${widget.workshopClass.name}'),
+            content: _InlineError(error: snapshot.error!),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Fechar'),
+              ),
+            ],
+          );
+        }
+
+        final savedRecords = snapshot.hasData
+            ? {for (final record in snapshot.data!) record.studentId: record}
+            : <String, AttendanceRecord>{};
+        final allMarked = widget.enrollments.every(
+          (enrollment) =>
+              _changes.containsKey(enrollment.studentId) ||
+              savedRecords.containsKey(enrollment.studentId),
+        );
+        return AlertDialog(
+          title: Text('Frequência · ${widget.workshopClass.name}'),
+          content: SizedBox(
+            width: 480,
+            height: 390,
+            child: Column(
+              children: [
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Data da aula'),
+                  subtitle: Text(_dateLabel(_lessonDate)),
+                  trailing: const Icon(Icons.calendar_month_outlined),
+                  onTap: _saving ? null : _pickDate,
+                ),
+                Expanded(
+                  child: !snapshot.hasData
+                      ? const Center(child: CircularProgressIndicator())
+                      : ListView(
+                          children: [
+                            for (final enrollment in widget.enrollments)
+                              _attendanceStudentTile(enrollment, savedRecords),
+                            if (!allMarked)
+                              const Padding(
+                                padding: EdgeInsets.only(top: 8),
+                                child: Text(
+                                  'Marque presença ou falta para todos.',
+                                ),
+                              ),
+                          ],
+                        ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: _saving ? null : () => Navigator.pop(context),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: _saving || !snapshot.hasData || !allMarked
+                  ? null
+                  : () => _save(savedRecords),
+              child: _saving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Salvar frequência'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _attendanceStudentTile(
+    Enrollment enrollment,
+    Map<String, AttendanceRecord> savedRecords,
+  ) {
+    final studentId = enrollment.studentId;
+    final present = _changes.containsKey(studentId)
+        ? _changes[studentId]
+        : savedRecords[studentId]?.present;
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      title: Text(enrollment.studentName),
+      subtitle: Text(
+        present == null
+            ? 'Frequência não marcada'
+            : present
+            ? 'Presente'
+            : 'Falta',
+      ),
+      trailing: SegmentedButton<bool>(
+        showSelectedIcon: false,
+        emptySelectionAllowed: true,
+        segments: const [
+          ButtonSegment(value: true, label: Text('Presente')),
+          ButtonSegment(value: false, label: Text('Falta')),
+        ],
+        selected: present == null ? <bool>{} : {present},
+        onSelectionChanged: _saving
+            ? null
+            : (selection) =>
+                  setState(() => _changes[studentId] = selection.first),
+      ),
     );
   }
 }
@@ -2028,6 +2547,34 @@ Future<void> _showEnrollmentForm(
   );
 }
 
+Future<void> _showAttendanceForm(
+  BuildContext context,
+  FirestoreService service,
+  WorkshopClass workshopClass,
+  List<Enrollment> enrollments,
+) async {
+  await showDialog<void>(
+    context: context,
+    builder: (_) => _AttendanceForm(
+      service: service,
+      workshopClass: workshopClass,
+      enrollments: enrollments,
+    ),
+  );
+}
+
+Future<void> _showAttendanceReport(
+  BuildContext context,
+  FirestoreService service,
+  WorkshopClass workshopClass,
+) async {
+  await showDialog<void>(
+    context: context,
+    builder: (_) =>
+        _AttendanceReportDialog(service: service, workshopClass: workshopClass),
+  );
+}
+
 Future<void> _setClassStatus(
   BuildContext context,
   FirestoreService service,
@@ -2043,6 +2590,7 @@ Future<void> _setClassStatus(
         instructorUid: workshopClass.instructorUid,
         capacity: workshopClass.capacity,
         isActive: isActive,
+        schedule: workshopClass.schedule,
       ),
     );
   } on FirebaseException catch (error) {
@@ -2283,6 +2831,46 @@ String _dateLabel(DateTime date) {
   return '${date.day.toString().padLeft(2, '0')}/'
       '${date.month.toString().padLeft(2, '0')}/${date.year}';
 }
+
+String _classScheduleLabel(List<ClassSchedule> schedule) {
+  const weekdays = {
+    1: 'Seg',
+    2: 'Ter',
+    3: 'Qua',
+    4: 'Qui',
+    5: 'Sex',
+    6: 'Sáb',
+    7: 'Dom',
+  };
+  return schedule
+      .map(
+        (entry) =>
+            '${weekdays[entry.weekday]} ${entry.startTime}–${entry.endTime}',
+      )
+      .join(' · ');
+}
+
+String _weekdayLabel(int weekday) {
+  const weekdays = {
+    1: 'Segunda-feira',
+    2: 'Terça-feira',
+    3: 'Quarta-feira',
+    4: 'Quinta-feira',
+    5: 'Sexta-feira',
+    6: 'Sábado',
+    7: 'Domingo',
+  };
+  return weekdays[weekday]!;
+}
+
+TimeOfDay _parseTimeOfDay(String value) {
+  final parts = value.split(':');
+  return TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1]));
+}
+
+String _formatTimeOfDay(TimeOfDay value) =>
+    '${value.hour.toString().padLeft(2, '0')}:'
+    '${value.minute.toString().padLeft(2, '0')}';
 
 int? _parseAmountToCents(String text) {
   var normalized = text.trim().replaceAll('R\$', '').replaceAll(' ', '');
